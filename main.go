@@ -152,7 +152,7 @@ func main() {
 		log.Fatal("COLLECT_INFLUXDB_PASS undefined")
 	}
 
-	log.Printf("connecting to %q@%q with %q", username, fmt.Sprintf(host, hostname), password)
+	log.Printf("connecting to %q@%q", username, fmt.Sprintf(host, hostname))
 	c, err := client.NewHTTPClient(client.HTTPConfig{
 		Addr:     fmt.Sprintf(host, hostname),
 		Username: username,
