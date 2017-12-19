@@ -1,0 +1,8 @@
+CREATE DATABASE rtlamr
+ALTER RETENTION POLICY "autogen" ON "rtlamr" DURATION 240m REPLICATION 1 SHARD DURATION 1h DEFAULT
+CREATE RETENTION POLICY "1w_5m"  ON "rtlamr" DURATION 1w REPLICATION 1
+CREATE RETENTION POLICY "30d_1h"  ON "rtlamr" DURATION 30d REPLICATION 1
+CREATE RETENTION POLICY "5y_1d"  ON "rtlamr" DURATION 1825d REPLICATION 1
+CREATE CONTINUOUS QUERY "5m_power" ON "rtlamr" RESAMPLE EVERY 5m FOR 240m BEGIN SELECT mode("consumption") AS "consumption" INTO "1w_5m"."power" FROM "autogen"."power" GROUP BY time(5m), "endpoint_id" END
+CREATE CONTINUOUS QUERY "1h_power" ON "rtlamr" RESAMPLE EVERY 1h FOR 4h BEGIN SELECT sum("consumption") AS "consumption" INTO "30d_1h"."power" FROM "1w_5m"."power" GROUP BY time(1h), "endpoint_id" END
+CREATE CONTINUOUS QUERY "1d_power" ON "rtlamr" RESAMPLE EVERY 1d FOR 2d BEGIN SELECT sum("consumption") AS "consumption" INTO "5y_1d"."power" FROM "30d_1h"."power" GROUP BY time(1d), "endpoint_id" END
