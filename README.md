@@ -13,10 +13,9 @@ Downloading and building rtlamr-collect is as easy as:
 
 This will produce the binary `$GOPATH/bin/rtlamr-collect`. For convenience it's common to add `$GOPATH/bin` to the path.
 
-
 Provisioning influxdb can be done using the included initial schema (assuming you have the influx cli client installed):
 
-	influx -host "host" -username 'user' -password 'pass' -path "init.iql"
+	influx -host "host" -username 'user' -password 'pass' -import -path "init.iql"
 
 This creates a database `rtlamr`, four retention policies and associated continuous queries:
 
