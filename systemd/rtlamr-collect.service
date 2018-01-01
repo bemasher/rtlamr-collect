@@ -1,0 +1,13 @@
+[Unit]
+Description=RTLAMR Collector
+BindsTo=rtl_tcp.service
+After=rtl_tcp.service
+
+[Service]
+EnvironmentFile=/etc/systemd/system/rtlamr-collect.env
+ExecStart=/bin/sh -c '${GOPATH}/bin/rtlamr | ${GOPATH}/bin/rtlamr-collect'
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
