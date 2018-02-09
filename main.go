@@ -36,23 +36,20 @@ const (
 	threshold = 30 * time.Second
 )
 
+var multiplier float64
+
 type Message struct {
 	Time time.Time `json:"Time"`
 	IDM  IDM       `json:"Message"`
 }
 
 type IDM struct {
-	PacketTypeID       uint8    `json:"PacketTypeID"`
-	PacketLength       uint8    `json:"PacketLength"`
-	HammingCode        uint8    `json:"HammingCode"`
-	ApplicationVersion uint8    `json:"ApplicationVersion"`
-	EndPointType       byte     `json:"ERTType"`
-	EndPointID         uint32   `json:"ERTSerialNumber"`
-	Consumption        uint32   `json:"LastConsumptionCount"`
-	TransmitTime       uint16   `json:"TransmitTimeOffset"`
-	IntervalCount      byte     `json:"ConsumptionIntervalCount"`
-	Intervals          []uint16 `json:"DifferentialConsumptionIntervals"`
-	IDCRC              uint16   `json:"SerialNumberCRC"`
+	EndPointType  byte     `json:"ERTType"`
+	EndPointID    uint32   `json:"ERTSerialNumber"`
+	TransmitTime  uint16   `json:"TransmitTimeOffset"`
+	IntervalCount byte     `json:"ConsumptionIntervalCount"`
+	Intervals     []uint16 `json:"DifferentialConsumptionIntervals"`
+	IDCRC         uint16   `json:"SerialNumberCRC"`
 }
 
 func (idm IDM) Tags(idx int) map[string]string {
@@ -71,7 +68,7 @@ func (idm IDM) Fields(idx int) map[string]interface{} {
 type Consumption struct {
 	New   [256]bool
 	Time  [256]time.Time
-	Usage [256]uint16
+	Usage [256]float64
 }
 
 func (c Consumption) Fields(idx uint) map[string]interface{} {
@@ -94,7 +91,7 @@ func (c *Consumption) Update(msg Message) {
 		if c.Time[interval].IsZero() || diff > threshold || diff < -threshold {
 			c.New[interval] = true
 			c.Time[interval] = t
-			c.Usage[interval] = usage * 10
+			c.Usage[interval] = float64(usage) * multiplier
 		}
 	}
 }
@@ -109,7 +106,7 @@ func (mm MeterMap) Preload(c client.Client) {
 				for _, v := range s.Values {
 					// time, usage, endpoint_id, endpoint_type, interval
 					nsec, _ := v[0].(json.Number).Int64()
-					usage, _ := v[1].(json.Number).Int64()
+					usage, _ := v[1].(json.Number).Float64()
 					interval, _ := v[2].(json.Number).Int64()
 					id, _ := strconv.Atoi(v[3].(string))
 					meter := uint32(id)
@@ -120,7 +117,7 @@ func (mm MeterMap) Preload(c client.Client) {
 
 					consumption := mm[meter]
 					consumption.Time[interval] = time.Unix(0, nsec)
-					consumption.Usage[interval] = uint16(usage)
+					consumption.Usage[interval] = usage
 					mm[meter] = consumption
 				}
 			}
@@ -150,6 +147,17 @@ func main() {
 	password, ok := os.LookupEnv("COLLECT_INFLUXDB_PASS")
 	if !ok {
 		log.Fatal("COLLECT_INFLUXDB_PASS undefined")
+	}
+
+	multiplierEnv, ok := os.LookupEnv("COLLECT_MULTIPLIER")
+	if ok {
+		var err error
+		multiplier, err = strconv.ParseFloat(multiplierEnv, 64)
+		if err != nil {
+			log.Fatal("COLLECT_MULTIPLIER is defined and does not contain a number")
+		}
+	} else {
+		multiplier = 10.0
 	}
 
 	log.Printf("connecting to %q@%q", username, fmt.Sprintf(host, hostname))

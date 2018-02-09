@@ -32,6 +32,10 @@ rtlamr-collect is entirely configured through environment variables:
  * `COLLECT_INFLUXDB_USER=username` InfluxDB username to authenticate with.
  * `COLLECT_INFLUXDB_PASS=password` InfluxDB password to authenticate with.
 
+Units for your particular meter may be defined through the use of the following environment variable:
+ * `COLLECT_MULTIPLIER=10` Defines a multiplier for differential intervals.
+ This allows the user to specify what units their meter is reporting. If it is undefined, the default is 10 in order to obtain Wh from meters that report kWh with two digits beyond the decimal.
+
 At a minimum rtlamr must have the following environment variables defined:
  * `RTLAMR_MSGTYPE=idm` Currently only idm packets are supported.
  * `RTLAMR_FORMAT=json` rtlamr-collect input must be json.
