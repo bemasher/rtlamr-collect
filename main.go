@@ -17,7 +17,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,106 +24,268 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bemasher/rtlamr/crc"
-	"github.com/influxdata/influxdb/client/v2"
+	client "github.com/influxdata/influxdb1-client/v2"
+	"github.com/pkg/errors"
 )
 
 const (
-	dbName = "rtlamr"
-	host   = "http://%s:8086"
-
-	threshold = 30 * time.Second
+	measurement = "rtlamr"
+	threshold   = 30 * time.Second
 )
 
-var multiplier float64
+// LogMessage is a encapsulating type rtlamr uses for all messages. It contains
+// time, message type, and the encapsulated message.
+type LogMessage struct {
+	Time time.Time
+	Type string
 
-type Message struct {
-	Time time.Time `json:"Time"`
-	IDM  IDM       `json:"Message"`
+	// Defer decoding until we know what type the message is.
+	Message json.RawMessage
 }
 
+func (msg LogMessage) String() string {
+	return fmt.Sprintf("{Time:%s Type:%s}", msg.Time, msg.Type)
+}
+
+// IDM handles Interval Data Messages (IDM and NetIDM) from rtlamr.
 type IDM struct {
-	EndPointType  byte     `json:"ERTType"`
-	EndPointID    uint32   `json:"ERTSerialNumber"`
-	TransmitTime  uint16   `json:"TransmitTimeOffset"`
-	IntervalCount byte     `json:"ConsumptionIntervalCount"`
-	Intervals     []uint16 `json:"DifferentialConsumptionIntervals"`
-	IDCRC         uint16   `json:"SerialNumberCRC"`
+	Meters MeterMap `json:"-"`
+
+	EndpointType byte     `json:"ERTType"`
+	EndpointID   uint32   `json:"ERTSerialNumber"`
+	TransmitTime uint16   `json:"TransmitTimeOffset"`
+	IntervalIdx  byte     `json:"ConsumptionIntervalCount"`
+	IntervalDiff []uint16 `json:"DifferentialConsumptionIntervals"`
 }
 
-func (idm IDM) Tags(idx int) map[string]string {
-	return map[string]string{
-		"endpoint_id": strconv.Itoa(int(idm.EndPointID)),
-	}
-}
+// AddPoints adds differential usage data to a batch of points.
+func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
+	// TransmitTime is 1/16ths of a second since the interval began.
+	intervalOffset := time.Duration(idm.TransmitTime) * time.Second / 16
 
-func (idm IDM) Fields(idx int) map[string]interface{} {
-	return map[string]interface{}{
-		"consumption": float64(idm.Intervals[idx]) * 10,
-		"interval":    int64(uint(int(idm.IntervalCount)-idx) % 256),
-	}
-}
+	// Does this meter have any state?
+	state, seen := idm.Meters[Meter{idm.EndpointID, idm.EndpointType, msg.Type}]
 
-type Consumption struct {
-	New   [256]bool
-	Time  [256]time.Time
-	Usage [256]float64
-}
-
-func (c Consumption) Fields(idx uint) map[string]interface{} {
-	return map[string]interface{}{
-		"consumption": float64(c.Usage[idx]),
-	}
-}
-
-func (c *Consumption) Update(msg Message) {
-	for idx := range c.New {
-		c.New[idx] = false
+	// Update the meter map with new state.
+	idm.Meters[Meter{idm.EndpointID, idm.EndpointType, msg.Type}] = LastMessage{
+		msg.Time.Add(-intervalOffset),
+		uint(idm.IntervalIdx),
 	}
 
-	timeOffset := time.Duration(msg.IDM.TransmitTime) * 62500 * time.Microsecond
-	for idx, usage := range msg.IDM.Intervals {
-		interval := uint(int(msg.IDM.IntervalCount)-idx) % 256
-		t := msg.Time.Add(-time.Duration(idx)*5*time.Minute - timeOffset).Truncate(time.Second)
+	// For each differential interval.
+	for idx, usage := range idm.IntervalDiff {
+		// Calculate the interval.
+		interval := uint(int(idm.IntervalIdx)-idx) % 256
 
-		diff := c.Time[interval].Sub(t)
-		if c.Time[interval].IsZero() || diff > threshold || diff < -threshold {
-			c.New[interval] = true
-			c.Time[interval] = t
-			c.Usage[interval] = float64(usage) * multiplier
+		// Calculate the interval's timestamp.
+		intervalTime := msg.Time.Add(-time.Duration(idx)*5*time.Minute - intervalOffset)
+
+		// If the meter has been seen before and we are looking at the same interval.
+		if seen && interval == state.Interval {
+			// Calculate the time difference between the current interval, and
+			// the last interval we know about.
+			diff := state.Time.Sub(intervalTime)
+
+			// If the difference is less than the threshold, this interval is old data, bail.
+			if diff > -threshold && diff < threshold {
+				return
+			}
 		}
+
+		pt, err := client.NewPoint(
+			measurement,
+			map[string]string{
+				"protocol":      msg.Type,
+				"msg_type":      "differential",
+				"endpoint_type": strconv.Itoa(int(idm.EndpointType)),
+				"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
+			},
+			map[string]interface{}{
+				"consumption": int64(usage),
+				"interval":    int64(interval),
+			},
+			intervalTime,
+		)
+
+		if err != nil {
+			log.Println(errors.Wrap(err, "new point"))
+			continue
+		}
+
+		bp.AddPoint(pt)
 	}
 }
 
-type MeterMap map[uint32]Consumption
+// SCM handles Standard Consumption Messages from rtlamr.
+type SCM struct {
+	EndpointID   uint32 `json:"ID"`
+	EndpointType uint8  `json:"Type"`
+	Consumption  uint32 `json:"Consumption"`
+}
 
-func (mm MeterMap) Preload(c client.Client) {
-	q := client.NewQuery("SELECT * FROM power WHERE time > now() - 4h", "distinct", "ns")
-	if res, err := c.Query(q); err == nil && res.Error() == nil {
-		for _, r := range res.Results {
-			for _, s := range r.Series {
-				for _, v := range s.Values {
-					// time, usage, endpoint_id, endpoint_type, interval
-					nsec, _ := v[0].(json.Number).Int64()
-					usage, _ := v[1].(json.Number).Float64()
-					interval, _ := v[2].(json.Number).Int64()
-					id, _ := strconv.Atoi(v[3].(string))
-					meter := uint32(id)
+// AddPoints adds cummulative usage data to a batch of points.
+func (scm SCM) AddPoints(msg LogMessage, bp client.BatchPoints) {
+	pt, err := client.NewPoint(
+		measurement,
+		map[string]string{
+			"protocol":      msg.Type,
+			"msg_type":      "cumulative",
+			"endpoint_type": strconv.Itoa(int(scm.EndpointType)),
+			"endpoint_id":   strconv.Itoa(int(scm.EndpointID)),
+		},
+		map[string]interface{}{
+			"consumption": int64(scm.Consumption),
+		},
+		msg.Time,
+	)
 
-					if _, exists := mm[meter]; !exists {
-						mm[meter] = Consumption{}
-					}
+	if err != nil {
+		log.Println(errors.Wrap(err, "new point"))
+		return
+	}
 
-					consumption := mm[meter]
-					consumption.Time[interval] = time.Unix(0, nsec)
-					consumption.Usage[interval] = usage
-					mm[meter] = consumption
+	bp.AddPoint(pt)
+}
+
+// SCMPlus handles Standard Consumption Message Plus messages from rtlamr.
+type SCMPlus struct {
+	EndpointID   uint32 `json:"EndpointType"`
+	EndpointType uint8  `json:"EndpointID"`
+	Consumption  uint32 `json:"Consumption"`
+}
+
+// AddPoints adds cummulative usage data to a batch of points.
+func (scmplus SCMPlus) AddPoints(msg LogMessage, bp client.BatchPoints) {
+	pt, err := client.NewPoint(
+		measurement,
+		map[string]string{
+			"protocol":      msg.Type,
+			"msg_type":      "cumulative",
+			"endpoint_type": strconv.Itoa(int(scmplus.EndpointType)),
+			"endpoint_id":   strconv.Itoa(int(scmplus.EndpointID)),
+		},
+		map[string]interface{}{
+			"consumption": int64(scmplus.Consumption),
+		},
+		msg.Time,
+	)
+
+	if err != nil {
+		log.Println(errors.Wrap(err, "new point"))
+		return
+	}
+
+	bp.AddPoint(pt)
+}
+
+// R900 handles Neptune R900 messages from rtlamr, both R900 and R900BCD.
+type R900 struct {
+	EndpointID   uint32 `json:"ID"`
+	EndpointType uint8  `json:"Unkn1"`
+	Consumption  uint32 `json:"Consumption"`
+}
+
+// AddPoints adds cummulative usage data to a batch of points.
+func (r900 R900) AddPoints(msg LogMessage, bp client.BatchPoints) {
+	pt, err := client.NewPoint(
+		measurement,
+		map[string]string{
+			"protocol":      msg.Type,
+			"msg_type":      "cumulative",
+			"endpoint_type": strconv.Itoa(int(r900.EndpointType)),
+			"endpoint_id":   strconv.Itoa(int(r900.EndpointID)),
+		},
+		map[string]interface{}{
+			"consumption": int64(r900.Consumption),
+		},
+		msg.Time,
+	)
+
+	if err != nil {
+		log.Println()
+		return
+	}
+
+	bp.AddPoint(pt)
+}
+
+// Message knows how to add points to a batch of points.
+type Message interface {
+	AddPoints(LogMessage, client.BatchPoints)
+}
+
+type Meter struct {
+	EndpointID   uint32
+	EndpointType uint8
+	Protocol     string
+}
+
+func NewMeter(tags map[string]string) (m Meter, err error) {
+	endpoint_id, err := strconv.ParseUint(tags["endpoint_id"], 10, 32)
+	if err != nil {
+		return m, errors.Wrap(err, "new meter")
+	}
+
+	endpoint_type, err := strconv.ParseUint(tags["endpoint_type"], 10, 8)
+	if err != nil {
+		return m, errors.Wrap(err, "new meter")
+	}
+
+	protocol, ok := tags["protocol"]
+	if !ok {
+		return m, errors.New("missing protocol tag")
+	}
+
+	return Meter{
+		uint32(endpoint_id),
+		uint8(endpoint_type),
+		protocol,
+	}, nil
+}
+
+// LastMessage represents a meter's last interval and time.
+type LastMessage struct {
+	Time     time.Time
+	Interval uint
+}
+
+// MeterMap keeps meter state to avoid sending duplicate data to the database.
+type MeterMap map[Meter]LastMessage
+
+// Preload retrieves state for all previously seen differential meters.
+func (mm MeterMap) Preload(c client.Client, database string) {
+	q := client.NewQuery(`
+		SELECT last(interval)
+		FROM rtlamr
+		WHERE msg_type = 'differential'
+		GROUP BY protocol, endpoint_id, endpoint_type
+	`, database, "s")
+
+	res, err := c.Query(q)
+	if err != nil {
+		log.Println(errors.Wrap(err, "meter map preload"))
+		return
+	}
+
+	for _, r := range res.Results {
+		for _, s := range r.Series {
+			meter, err := NewMeter(s.Tags)
+			if err != nil {
+				log.Println(errors.Wrap(err, "new meter"))
+				continue
+			}
+
+			for _, v := range s.Values {
+				unixEpoch, _ := v[0].(json.Number).Int64()
+				interval, _ := v[1].(json.Number).Int64()
+
+				mm[meter] = LastMessage{
+					time.Unix(unixEpoch, 0),
+					uint(interval),
 				}
 			}
 		}
 	}
-
-	log.Printf("Preloaded: %d", len(mm))
 }
 
 func init() {
@@ -132,12 +293,13 @@ func init() {
 }
 
 func main() {
-	stdinBuf := bufio.NewScanner(os.Stdin)
-
-	hostname, ok := os.LookupEnv("COLLECT_INFLUXDB_HOSTNAME")
-	if !ok {
-		log.Fatal("COLLECT_INFLUXDB_HOSTNAME undefined")
-	}
+	// COLLECT_INFLUXDB_STRICTIDM limits which endpoint types may be decoded
+	// between IDM and NetIDM. In the wild, type 7 should be standard IDM and
+	// type 8 should be NetIDM. Both messages have the same preamble and
+	// checksum, so they are picked up by both decoders, but have different
+	// internal field layout.
+	_, strict := os.LookupEnv("COLLECT_STRICTIDM")
+	_ = strict
 
 	username, ok := os.LookupEnv("COLLECT_INFLUXDB_USER")
 	if !ok {
@@ -149,20 +311,19 @@ func main() {
 		log.Fatal("COLLECT_INFLUXDB_PASS undefined")
 	}
 
-	multiplierEnv, ok := os.LookupEnv("COLLECT_MULTIPLIER")
-	if ok {
-		var err error
-		multiplier, err = strconv.ParseFloat(multiplierEnv, 64)
-		if err != nil {
-			log.Fatal("COLLECT_MULTIPLIER is defined and does not contain a number")
-		}
-	} else {
-		multiplier = 10.0
+	hostname, ok := os.LookupEnv("COLLECT_INFLUXDB_HOSTNAME")
+	if !ok {
+		log.Fatal("COLLECT_INFLUXDB_HOSTNAME undefined")
 	}
 
-	log.Printf("connecting to %q@%q", username, fmt.Sprintf(host, hostname))
+	database, ok := os.LookupEnv("COLLECT_INFLUXDB_DATABASE")
+	if !ok {
+		log.Fatal("COLLECT_INFLUXDB_DATABASE undefined")
+	}
+
+	log.Printf("connecting to %q@%q", username, hostname)
 	c, err := client.NewHTTPClient(client.HTTPConfig{
-		Addr:     fmt.Sprintf(host, hostname),
+		Addr:     hostname,
 		Username: username,
 		Password: password,
 	})
@@ -170,65 +331,76 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	batchPointConfig := client.BatchPointsConfig{
-		Database:  dbName,
+	mm := MeterMap{}
+	mm.Preload(c, database)
+
+	// Store points in the given database with second resolution.
+	bpConfig := client.BatchPointsConfig{
+		Database:  database,
 		Precision: "s",
 	}
 
-	idmCRC := crc.NewCRC("CCITT", 0xFFFF, 0x1021, 0x1D0F)
-
-	mm := make(MeterMap)
-	mm.Preload(c)
-
+	// Read lines from stdin.
+	stdinBuf := bufio.NewScanner(os.Stdin)
 	for stdinBuf.Scan() {
+		line := stdinBuf.Bytes()
+
+		// Parse a log message.
+		var logMsg LogMessage
+		err := json.Unmarshal(line, &logMsg)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		// Store the appropriate message type in msg based on logMsg.Type.
 		var msg Message
-		err := json.Unmarshal(stdinBuf.Bytes(), &msg)
+		switch logMsg.Type {
+		case "SCM":
+			msg = new(SCM)
+		case "SCM+":
+			msg = new(SCMPlus)
+		case "IDM", "NetIDM":
+			msg = new(IDM)
+		case "R900", "R900BCD":
+			msg = new(R900)
+		}
+
+		// Parse the encapsulated message.
+		err = json.Unmarshal(logMsg.Message, msg)
 		if err != nil {
-			log.Println(err)
-			continue
-		}
-		idm := msg.IDM
-
-		buf := make([]byte, 6)
-		binary.BigEndian.PutUint32(buf[:4], msg.IDM.EndPointID)
-		binary.BigEndian.PutUint16(buf[4:], msg.IDM.IDCRC)
-		if residue := idmCRC.Checksum(buf); residue != idmCRC.Residue {
+			log.Println(errors.Wrap(err, "json unmarshal"))
 			continue
 		}
 
-		bp, err := client.NewBatchPoints(batchPointConfig)
+		// Create a new batch of points.
+		bp, err := client.NewBatchPoints(bpConfig)
 		if err != nil {
-			log.Println(err)
+			log.Println(errors.Wrap(err, "new batch points"))
 			continue
 		}
 
-		if _, exists := mm[idm.EndPointID]; !exists {
-			mm[idm.EndPointID] = Consumption{}
-		}
+		// If current message is an IDM.
+		if idm, ok := msg.(*IDM); ok {
+			// Store meter state for discarding duplicate data.
+			idm.Meters = mm
 
-		consumption := mm[idm.EndPointID]
-		consumption.Update(msg)
-		mm[idm.EndPointID] = consumption
-
-		for idx := range idm.Intervals {
-			interval := uint(int(msg.IDM.IntervalCount)-idx) % 256
-
-			if !consumption.New[interval] {
+			// If COLLECT_INFLUXDB_STRICTIDM is defined, disallow IDM of type 8.
+			if strict && logMsg.Type == "IDM" && idm.EndpointType == 8 {
 				continue
 			}
 
-			pt, err := client.NewPoint(
-				"power",
-				idm.Tags(idx),
-				consumption.Fields(interval),
-				consumption.Time[interval],
-			)
-
-			if err != nil {
-				log.Println(err)
-			} else {
-				bp.AddPoint(pt)
+			// If COLLECT_INFLUXDB_STRICTIDM is defined, disallow NetIDM of type 7.
+			if strict && logMsg.Type == "NetIDM" && idm.EndpointType == 7 {
+				continue
 			}
+		}
+
+		// Messages know how to add points to a batch.
+		msg.AddPoints(logMsg, bp)
+
+		for _, p := range bp.Points() {
+			log.Printf("%+v\n", p)
 		}
 
 		if err := c.Write(bp); err != nil {

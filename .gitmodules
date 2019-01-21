@@ -1,0 +1,6 @@
+[submodule "vendor/github.com/influxdata/influxdb1-client"]
+	path = vendor/github.com/influxdata/influxdb1-client
+	url = https://github.com/influxdata/influxdb1-client.git
+[submodule "vendor/github.com/pkg/errors"]
+	path = vendor/github.com/pkg/errors
+	url = https://github.com/pkg/errors.git
