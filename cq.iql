@@ -1,0 +1,64 @@
+-- Data aggregation for rtlamr.
+-- Copyright (C) 2017 Douglas Hall
+--
+-- This program is free software: you can redistribute it and/or modify
+-- it under the terms of the GNU Affero General Public License as published
+-- by the Free Software Foundation, either version 3 of the License, or
+-- (at your option) any later version.
+--
+-- This program is distributed in the hope that it will be useful,
+-- but WITHOUT ANY WARRANTY; without even the implied warranty of
+-- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-- GNU Affero General Public License for more details.
+--
+-- You should have received a copy of the GNU Affero General Public License
+-- along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+-- Aggregate differential consumption data into 1h intervals. Messages contain just
+-- shy of 4 hours worth of historical data. If we miss any messages, we may
+-- aggregate an incomplete interval before it is filled in again. So run every 1h,
+-- and look back 4h.
+CREATE CONTINUOUS QUERY "1h_power" ON "rtlamr"
+RESAMPLE EVERY 1h FOR 4h
+BEGIN
+	SELECT sum("consumption") AS "consumption"
+	INTO "30d_1h"."power"
+	FROM "autogen"."rtlamr"
+	WHERE "msg_type" = 'differential'
+	GROUP BY time(1h), *
+	TZ('America/Denver')
+END
+
+CREATE CONTINUOUS QUERY "1d_power" ON "rtlamr"
+RESAMPLE EVERY 1d FOR 2d
+BEGIN
+	SELECT sum("consumption") AS "consumption"
+	INTO "5y_1d"."power"
+	FROM "30d_1h"."power"
+	WHERE "msg_type" = 'differential'
+	GROUP BY time(1d), *
+	TZ('America/Denver')
+END
+
+-- Aggregate cumulative data into 1h intervals. Look at the non-negative difference
+-- between the largest consumption value 1h apart.
+CREATE CONTINUOUS QUERY "1h_gas" ON "rtlamr"
+RESAMPLE EVERY 1h FOR 2h
+BEGIN
+	SELECT non_negative_difference(max("consumption")) AS "consumption"
+	INTO "30d_1h"."gas"
+	FROM "autogen"."rtlamr"
+	WHERE "msg_type" = 'cumulative'
+	GROUP BY time(1h), *
+	TZ('America/Denver')
+END
+
+CREATE CONTINUOUS QUERY "1d_gas" ON "rtlamr"
+RESAMPLE EVERY 1d FOR 2d
+BEGIN
+	SELECT sum("consumption") AS "consumption"
+	INTO "rtlamr"."5y_1d"."gas"
+	FROM "rtlamr"."30d_1h"."gas"
+	GROUP BY time(1d), *
+	TZ('America/Denver')
+END
