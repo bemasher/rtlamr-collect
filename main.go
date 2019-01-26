@@ -56,6 +56,8 @@ type IDM struct {
 	TransmitTime uint16   `json:"TransmitTimeOffset"`
 	IntervalIdx  byte     `json:"ConsumptionIntervalCount"`
 	IntervalDiff []uint16 `json:"DifferentialConsumptionIntervals"`
+
+	PowerOutage uint64 `json:"PowerOutageFlags"`
 }
 
 // AddPoints adds differential usage data to a batch of points.
@@ -101,8 +103,9 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 				"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
 			},
 			map[string]interface{}{
-				"consumption": int64(usage),
-				"interval":    int64(interval),
+				"consumption":  int64(usage),
+				"interval":     int64(interval),
+				"power_outage": int64(idm.PowerOutage),
 			},
 			intervalTime,
 		)
