@@ -94,6 +94,15 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 			}
 		}
 
+		fields := map[string]interface{}{
+			"consumption": int64(usage),
+			"interval":    int64(interval),
+		}
+
+		if idx == 0 {
+			fields["power_outage"] = int64(idm.PowerOutage)
+		}
+
 		pt, err := client.NewPoint(
 			measurement,
 			map[string]string{
@@ -102,11 +111,7 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 				"endpoint_type": strconv.Itoa(int(idm.EndpointType)),
 				"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
 			},
-			map[string]interface{}{
-				"consumption":  int64(usage),
-				"interval":     int64(interval),
-				"power_outage": int64(idm.PowerOutage),
-			},
+			fields,
 			intervalTime,
 		)
 
