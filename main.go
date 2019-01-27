@@ -183,6 +183,11 @@ type R900 struct {
 	EndpointID   uint32 `json:"ID"`
 	EndpointType uint8  `json:"Unkn1"`
 	Consumption  uint32 `json:"Consumption"`
+
+	NoUse    uint8 `json:"NoUse"`    // Day bins of no use
+	BackFlow uint8 `json:"BackFlow"` // Backflow past 35d hi/lo
+	Leak     uint8 `json:"Leak"`     // Day bins of leak
+	LeakNow  uint8 `json:"LeakNow"`  // Leak past 24h hi/lo
 }
 
 // AddPoints adds cummulative usage data to a batch of points.
@@ -197,6 +202,10 @@ func (r900 R900) AddPoints(msg LogMessage, bp client.BatchPoints) {
 		},
 		map[string]interface{}{
 			"consumption": int64(r900.Consumption),
+			"nouse":       int64(r900.NoUse),
+			"backflow":    int64(r900.BackFlow),
+			"leak":        int64(r900.Leak),
+			"leak_now":    int64(r900.LeakNow),
 		},
 		msg.Time,
 	)
