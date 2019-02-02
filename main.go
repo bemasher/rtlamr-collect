@@ -149,8 +149,8 @@ func (scm SCM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 
 // SCMPlus handles Standard Consumption Message Plus messages from rtlamr.
 type SCMPlus struct {
-	EndpointID   uint32 `json:"EndpointType"`
-	EndpointType uint8  `json:"EndpointID"`
+	EndpointID   uint32 `json:"EndpointID"`
+	EndpointType uint8  `json:"EndpointType"`
 	Consumption  uint32 `json:"Consumption"`
 }
 
