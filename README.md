@@ -25,8 +25,7 @@ All data written by `rtlamr-collect` occurs in the `rtlamr` measurement.
 
 ### Usage
 rtlamr-collect is entirely configured through environment variables:
- * `COLLECT_INFLUXDB_HOSTNAME=https://localhost:8086/` InfluxDB hostname to write data to.
- * `COLLECT_INFLUXDB_DATABASE=rtlamr` InfluxDB database to connect to.
+ * `COLLECT_INFLUXDB_HOSTNAME=localhost` InfluxDB hostname to write data to.
  * `COLLECT_INFLUXDB_USER=username` InfluxDB username to authenticate with.
  * `COLLECT_INFLUXDB_PASS=password` InfluxDB password to authenticate with.
  * `COLLECT_STRICTIDM=1` Ignores IDM with type 8 and NetIDM with type 7. This should probably always be enabled if you are simultaneously listening to IDM and NetIDM.
