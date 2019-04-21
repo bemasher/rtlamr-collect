@@ -358,7 +358,7 @@ func main() {
 	defer c.Close()
 
 	mm := MeterMap{}
-	// mm.Preload(c, database)
+	mm.Preload(c, database)
 
 	// Store points in the given database with second resolution.
 	bpConfig := client.BatchPointsConfig{
