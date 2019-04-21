@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -24,7 +25,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/influxdata/influxdb/client/v2"
+	client "github.com/influxdata/influxdb1-client/v2"
 	"github.com/pkg/errors"
 )
 
@@ -56,6 +57,7 @@ type IDM struct {
 	TransmitTime uint16   `json:"TransmitTimeOffset"`
 	IntervalIdx  byte     `json:"ConsumptionIntervalCount"`
 	IntervalDiff []uint16 `json:"DifferentialConsumptionIntervals"`
+	Outage       []byte   `json:"PowerOutageFlags"`
 }
 
 // AddPoints adds differential usage data to a batch of points.
@@ -71,6 +73,9 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 		msg.Time.Add(-intervalOffset),
 		uint(idm.IntervalIdx),
 	}
+
+	// Convert outage flags (6 bytes) to uint64 (8 bytes)
+	outage := binary.BigEndian.Uint64(append(make([]byte, 2), idm.Outage...))
 
 	// For each differential interval.
 	for idx, usage := range idm.IntervalDiff {
@@ -92,18 +97,27 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 			}
 		}
 
+		tags := map[string]string{
+			"protocol":      msg.Type,
+			"msg_type":      "differential",
+			"endpoint_type": strconv.Itoa(int(idm.EndpointType)),
+			"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
+		}
+
+		fields := map[string]interface{}{
+			"consumption": int64(usage),
+			"interval":    int64(interval),
+		}
+
+		// If the outage bit corresponding to this interval is 1, add it to the field.
+		if (outage>>uint(46-idx))&1 == 1 {
+			fields["outage"] = int64(1)
+		}
+
 		pt, err := client.NewPoint(
 			measurement,
-			map[string]string{
-				"protocol":      msg.Type,
-				"msg_type":      "differential",
-				"endpoint_type": strconv.Itoa(int(idm.EndpointType)),
-				"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
-			},
-			map[string]interface{}{
-				"consumption": int64(usage),
-				"interval":    int64(interval),
-			},
+			tags,
+			fields,
 			intervalTime,
 		)
 
@@ -330,18 +344,21 @@ func main() {
 		log.Fatal("COLLECT_INFLUXDB_DATABASE undefined")
 	}
 
-	log.Printf("connecting to %q@%q", username, hostname)
-	c, err := client.NewHTTPClient(client.HTTPConfig{
+	cfg := client.HTTPConfig{
 		Addr:     hostname,
 		Username: username,
 		Password: password,
-	})
+	}
+
+	log.Printf("connecting to %q@%q", username, hostname)
+	c, err := client.NewHTTPClient(cfg)
 	if err != nil {
 		log.Fatalln(err)
 	}
+	defer c.Close()
 
 	mm := MeterMap{}
-	mm.Preload(c, database)
+	// mm.Preload(c, database)
 
 	// Store points in the given database with second resolution.
 	bpConfig := client.BatchPointsConfig{

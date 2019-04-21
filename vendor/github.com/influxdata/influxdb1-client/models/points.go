@@ -1,5 +1,5 @@
 // Package models implements basic objects used throughout the TICK stack.
-package models // import "github.com/influxdata/platform/models"
+package models // import "github.com/influxdata/influxdb1-client/models"
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/influxdata/platform/pkg/escape"
+	"github.com/influxdata/influxdb1-client/pkg/escape"
 )
 
 type escapeSet struct {
@@ -162,23 +162,6 @@ const (
 	Unsigned
 )
 
-func (t FieldType) String() string {
-	switch t {
-	case Integer:
-		return "Integer"
-	case Float:
-		return "Float"
-	case Boolean:
-		return "Boolean"
-	case String:
-		return "String"
-	case Empty:
-		return "Empty"
-	default:
-		return "<unknown>"
-	}
-}
-
 // FieldIterator provides a low-allocation interface to iterate through a point's fields.
 type FieldIterator interface {
 	// Next indicates whether there any fields remaining.
@@ -311,7 +294,7 @@ func ParseKeyBytesWithTags(buf []byte, tags Tags) ([]byte, Tags) {
 	} else {
 		name = buf[:i]
 	}
-	return UnescapeMeasurement(name), tags
+	return unescapeMeasurement(name), tags
 }
 
 func ParseTags(buf []byte) Tags {
@@ -329,17 +312,7 @@ func ParseName(buf []byte) []byte {
 		name = buf[:i]
 	}
 
-	return UnescapeMeasurement(name)
-}
-
-// ValidPrecision checks if the precision is known.
-func ValidPrecision(precision string) bool {
-	switch precision {
-	case "ns", "us", "ms", "s":
-		return true
-	default:
-		return false
-	}
+	return unescapeMeasurement(name)
 }
 
 // ParsePointsWithPrecision is similar to ParsePoints, but allows the
@@ -362,7 +335,6 @@ func ParsePointsWithPrecision(buf []byte, defaultTime time.Time, precision strin
 			continue
 		}
 
-		// lines which start with '#' are comments
 		start := skipWhitespace(block, 0)
 
 		// If line is all whitespace, just skip it
@@ -370,6 +342,7 @@ func ParsePointsWithPrecision(buf []byte, defaultTime time.Time, precision strin
 			continue
 		}
 
+		// lines which start with '#' are comments
 		if block[start] == '#' {
 			continue
 		}
@@ -395,7 +368,7 @@ func ParsePointsWithPrecision(buf []byte, defaultTime time.Time, precision strin
 }
 
 func parsePoint(buf []byte, defaultTime time.Time, precision string) (Point, error) {
-	// scan the first block which is measurement[,tag1=value1,tag2=value=2...]
+	// scan the first block which is measurement[,tag1=value1,tag2=value2...]
 	pos, key, err := scanKey(buf, 0)
 	if err != nil {
 		return nil, err
@@ -479,12 +452,16 @@ func parsePoint(buf []byte, defaultTime time.Time, precision string) (Point, err
 func GetPrecisionMultiplier(precision string) int64 {
 	d := time.Nanosecond
 	switch precision {
-	case "us":
+	case "u":
 		d = time.Microsecond
 	case "ms":
 		d = time.Millisecond
 	case "s":
 		d = time.Second
+	case "m":
+		d = time.Minute
+	case "h":
+		d = time.Hour
 	}
 	return int64(d)
 }
@@ -1254,7 +1231,7 @@ func EscapeMeasurement(in []byte) []byte {
 	return in
 }
 
-func UnescapeMeasurement(in []byte) []byte {
+func unescapeMeasurement(in []byte) []byte {
 	if bytes.IndexByte(in, '\\') == -1 {
 		return in
 	}
@@ -1374,7 +1351,7 @@ func pointKey(measurement string, tags Tags, fields Fields, t time.Time) ([]byte
 				return nil, fmt.Errorf("+/-Inf is an unsupported value for field %s", key)
 			}
 			if math.IsNaN(value) {
-				return nil, fmt.Errorf("NAN is an unsupported value for field %s", key)
+				return nil, fmt.Errorf("NaN is an unsupported value for field %s", key)
 			}
 		case float32:
 			// Ensure the caller validates and handles invalid field values
@@ -1382,7 +1359,7 @@ func pointKey(measurement string, tags Tags, fields Fields, t time.Time) ([]byte
 				return nil, fmt.Errorf("+/-Inf is an unsupported value for field %s", key)
 			}
 			if math.IsNaN(float64(value)) {
-				return nil, fmt.Errorf("NAN is an unsupported value for field %s", key)
+				return nil, fmt.Errorf("NaN is an unsupported value for field %s", key)
 			}
 		}
 		if len(key) == 0 {
@@ -1636,7 +1613,7 @@ func MakeKey(name []byte, tags Tags) []byte {
 func AppendMakeKey(dst []byte, name []byte, tags Tags) []byte {
 	// unescape the name and then re-escape it to avoid double escaping.
 	// The key should always be stored in escaped form.
-	dst = append(dst, EscapeMeasurement(UnescapeMeasurement(name))...)
+	dst = append(dst, EscapeMeasurement(unescapeMeasurement(name))...)
 	dst = tags.AppendHashKey(dst)
 	return dst
 }
@@ -1672,12 +1649,17 @@ func (p *point) Fields() (Fields, error) {
 // SetPrecision will round a time to the specified precision.
 func (p *point) SetPrecision(precision string) {
 	switch precision {
-	case "us":
+	case "n":
+	case "u":
 		p.SetTime(p.Time().Truncate(time.Microsecond))
 	case "ms":
 		p.SetTime(p.Time().Truncate(time.Millisecond))
 	case "s":
 		p.SetTime(p.Time().Truncate(time.Second))
+	case "m":
+		p.SetTime(p.Time().Truncate(time.Minute))
+	case "h":
+		p.SetTime(p.Time().Truncate(time.Hour))
 	}
 }
 
@@ -1958,28 +1940,80 @@ func NewTags(m map[string]string) Tags {
 	return a
 }
 
-// Keys returns the list of keys for a tag set.
-func (a Tags) Keys() []string {
-	if len(a) == 0 {
-		return nil
-	}
-	keys := make([]string, len(a))
-	for i, tag := range a {
-		keys[i] = string(tag.Key)
-	}
-	return keys
+// HashKey hashes all of a tag's keys.
+func (a Tags) HashKey() []byte {
+	return a.AppendHashKey(nil)
 }
 
-// Values returns the list of values for a tag set.
-func (a Tags) Values() []string {
+func (a Tags) needsEscape() bool {
+	for i := range a {
+		t := &a[i]
+		for j := range tagEscapeCodes {
+			c := &tagEscapeCodes[j]
+			if bytes.IndexByte(t.Key, c.k[0]) != -1 || bytes.IndexByte(t.Value, c.k[0]) != -1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AppendHashKey appends the result of hashing all of a tag's keys and values to dst and returns the extended buffer.
+func (a Tags) AppendHashKey(dst []byte) []byte {
+	// Empty maps marshal to empty bytes.
 	if len(a) == 0 {
-		return nil
+		return dst
 	}
-	values := make([]string, len(a))
-	for i, tag := range a {
-		values[i] = string(tag.Value)
+
+	// Type invariant: Tags are sorted
+
+	sz := 0
+	var escaped Tags
+	if a.needsEscape() {
+		var tmp [20]Tag
+		if len(a) < len(tmp) {
+			escaped = tmp[:len(a)]
+		} else {
+			escaped = make(Tags, len(a))
+		}
+
+		for i := range a {
+			t := &a[i]
+			nt := &escaped[i]
+			nt.Key = escapeTag(t.Key)
+			nt.Value = escapeTag(t.Value)
+			sz += len(nt.Key) + len(nt.Value)
+		}
+	} else {
+		sz = a.Size()
+		escaped = a
 	}
-	return values
+
+	sz += len(escaped) + (len(escaped) * 2) // separators
+
+	// Generate marshaled bytes.
+	if cap(dst)-len(dst) < sz {
+		nd := make([]byte, len(dst), len(dst)+sz)
+		copy(nd, dst)
+		dst = nd
+	}
+	buf := dst[len(dst) : len(dst)+sz]
+	idx := 0
+	for i := range escaped {
+		k := &escaped[i]
+		if len(k.Value) == 0 {
+			continue
+		}
+		buf[idx] = ','
+		idx++
+		copy(buf[idx:], k.Key)
+		idx += len(k.Key)
+		buf[idx] = '='
+		idx++
+		copy(buf[idx:], k.Value)
+		idx += len(k.Value)
+	}
+	return dst[:len(dst)+idx]
 }
 
 // String returns the string representation of the tags.
@@ -2098,18 +2132,6 @@ func (a *Tags) SetString(key, value string) {
 	a.Set([]byte(key), []byte(value))
 }
 
-// Delete removes a tag by key.
-func (a *Tags) Delete(key []byte) {
-	for i, t := range *a {
-		if bytes.Equal(t.Key, key) {
-			copy((*a)[i:], (*a)[i+1:])
-			(*a)[len(*a)-1] = Tag{}
-			*a = (*a)[:len(*a)-1]
-			return
-		}
-	}
-}
-
 // Map returns a map representation of the tags.
 func (a Tags) Map() map[string]string {
 	m := make(map[string]string, len(a))
@@ -2117,96 +2139,6 @@ func (a Tags) Map() map[string]string {
 		m[string(t.Key)] = string(t.Value)
 	}
 	return m
-}
-
-// Merge merges the tags combining the two. If both define a tag with the
-// same key, the merged value overwrites the old value.
-// A new map is returned.
-func (a Tags) Merge(other map[string]string) Tags {
-	merged := make(map[string]string, len(a)+len(other))
-	for _, t := range a {
-		merged[string(t.Key)] = string(t.Value)
-	}
-	for k, v := range other {
-		merged[k] = v
-	}
-	return NewTags(merged)
-}
-
-// HashKey hashes all of a tag's keys.
-func (a Tags) HashKey() []byte {
-	return a.AppendHashKey(nil)
-}
-
-func (a Tags) needsEscape() bool {
-	for i := range a {
-		t := &a[i]
-		for j := range tagEscapeCodes {
-			c := &tagEscapeCodes[j]
-			if bytes.IndexByte(t.Key, c.k[0]) != -1 || bytes.IndexByte(t.Value, c.k[0]) != -1 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// AppendHashKey appends the result of hashing all of a tag's keys and values to dst and returns the extended buffer.
-func (a Tags) AppendHashKey(dst []byte) []byte {
-	// Empty maps marshal to empty bytes.
-	if len(a) == 0 {
-		return dst
-	}
-
-	// Type invariant: Tags are sorted
-
-	sz := 0
-	var escaped Tags
-	if a.needsEscape() {
-		var tmp [20]Tag
-		if len(a) < len(tmp) {
-			escaped = tmp[:len(a)]
-		} else {
-			escaped = make(Tags, len(a))
-		}
-
-		for i := range a {
-			t := &a[i]
-			nt := &escaped[i]
-			nt.Key = escapeTag(t.Key)
-			nt.Value = escapeTag(t.Value)
-			sz += len(nt.Key) + len(nt.Value)
-		}
-	} else {
-		sz = a.Size()
-		escaped = a
-	}
-
-	sz += len(escaped) + (len(escaped) * 2) // separators
-
-	// Generate marshaled bytes.
-	if cap(dst)-len(dst) < sz {
-		nd := make([]byte, len(dst), len(dst)+sz)
-		copy(nd, dst)
-		dst = nd
-	}
-	buf := dst[len(dst) : len(dst)+sz]
-	idx := 0
-	for i := range escaped {
-		k := &escaped[i]
-		if len(k.Value) == 0 {
-			continue
-		}
-		buf[idx] = ','
-		idx++
-		copy(buf[idx:], k.Key)
-		idx += len(k.Key)
-		buf[idx] = '='
-		idx++
-		copy(buf[idx:], k.Value)
-		idx += len(k.Value)
-	}
-	return dst[:len(dst)+idx]
 }
 
 // CopyTags returns a shallow copy of tags.
