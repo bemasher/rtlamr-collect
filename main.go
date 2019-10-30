@@ -75,7 +75,9 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 	}
 
 	// Convert outage flags (6 bytes) to uint64 (8 bytes)
-	outage := binary.BigEndian.Uint64(append(make([]byte, 2), idm.Outage...))
+	outageBytes := make([]uint8, 8)
+	copy(outageBytes[2:], idm.Outage)
+	outage := binary.BigEndian.Uint64(outageBytes)
 
 	// For each differential interval.
 	for idx, usage := range idm.IntervalDiff {
