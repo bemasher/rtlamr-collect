@@ -17,7 +17,7 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
+//	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
