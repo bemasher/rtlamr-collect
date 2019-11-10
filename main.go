@@ -17,7 +17,7 @@ package main
 
 import (
 	"bufio"
-//	"encoding/binary"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -75,8 +75,9 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 	}
 
 	// Convert outage flags (6 bytes) to uint64 (8 bytes)
-	// FIXME: crashes for netidm meters
-	//outage := binary.BigEndian.Uint64(append(make([]byte, 2), idm.Outage...))
+	outageBytes := make([]uint8, 8)
+	copy(outageBytes[2:], idm.Outage)
+	outage := binary.BigEndian.Uint64(outageBytes)
 
 	// For each differential interval.
 	for idx, usage := range idm.IntervalDiff {
@@ -111,11 +112,9 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 		}
 
 		// If the outage bit corresponding to this interval is 1, add it to the field.
-		// FIXME
-		//if (outage>>uint(46-idx))&1 == 1 {
-		//	fields["outage"] = int64(1)
-		//}
-		fields["outage"] = int64(1)
+		if (outage>>uint(46-idx))&1 == 1 {
+			fields["outage"] = int64(1)
+		}
 
 		pt, err := client.NewPoint(
 			measurement,
