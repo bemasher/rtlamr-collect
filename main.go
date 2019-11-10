@@ -82,7 +82,7 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 	outage := binary.BigEndian.Uint64(outageBytes)
 
 	// Total consumption
-	consumption := 0
+	consumption := uint32(0)
 	if msg.Type == "NetIDM" {
 		consumption = idm.NetConsumption
 	} else {
