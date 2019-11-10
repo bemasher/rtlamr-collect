@@ -52,12 +52,14 @@ func (msg LogMessage) String() string {
 type IDM struct {
 	Meters MeterMap `json:"-"`
 
-	EndpointType byte     `json:"ERTType"`
-	EndpointID   uint32   `json:"ERTSerialNumber"`
-	TransmitTime uint16   `json:"TransmitTimeOffset"`
-	IntervalIdx  byte     `json:"ConsumptionIntervalCount"`
-	IntervalDiff []uint16 `json:"DifferentialConsumptionIntervals"`
-	Outage       []byte   `json:"PowerOutageFlags"`
+	EndpointType     byte     `json:"ERTType"`
+	EndpointID       uint32   `json:"ERTSerialNumber"`
+	NetConsumption   uint32   `json:"LastConsumptionNet"`
+	CountConsumption uint32   `json:"LastConsumptionCount"`
+	TransmitTime     uint16   `json:"TransmitTimeOffset"`
+	IntervalIdx      byte     `json:"ConsumptionIntervalCount"`
+	IntervalDiff     []uint16 `json:"DifferentialConsumptionIntervals"`
+	Outage           []byte   `json:"PowerOutageFlags"`
 }
 
 // AddPoints adds differential usage data to a batch of points.
@@ -78,6 +80,33 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 	outageBytes := make([]uint8, 8)
 	copy(outageBytes[2:], idm.Outage)
 	outage := binary.BigEndian.Uint64(outageBytes)
+
+	// Total consumption
+	consumption := 0
+	if msg.type == "NetIDM" {
+	    consumption := idm.NetConsumption
+	} else {
+	    consumption := idm.CountConsumption
+	}
+
+	pt, err := client.NewPoint(
+		measurement,
+		map[string]string{
+			"protocol":      msg.Type,
+			"msg_type":      "cumulative",
+			"endpoint_type": strconv.Itoa(int(idm.EndpointType)),
+			"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
+		},
+		map[string]interface{}{
+			"consumption": int64(consumption),
+		},
+		msg.Time,
+	)
+	if err != nil {
+		log.Println(errors.Wrap(err, "new point"))
+		return
+	}
+	bp.AddPoint(pt)
 
 	// For each differential interval.
 	for idx, usage := range idm.IntervalDiff {
