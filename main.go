@@ -84,9 +84,9 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 	// Total consumption
 	consumption := 0
 	if msg.Type == "NetIDM" {
-		consumption := idm.NetConsumption
+		consumption = idm.NetConsumption
 	} else {
-		consumption := idm.CountConsumption
+		consumption = idm.CountConsumption
 	}
 
 	pt, err := client.NewPoint(
