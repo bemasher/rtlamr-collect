@@ -1,4 +1,4 @@
-module github.com/bemasher/rtlamr-collect
+module github.com/fcovatti/rtlamr-collect
 
 go 1.12
 

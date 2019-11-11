@@ -9,7 +9,7 @@ rtlamr-collect provides data aggregation for rtlamr. This tool in tandem with rt
 ### Building
 Downloading and building rtlamr-collect is as easy as:
 
-	go get github.com/bemasher/rtlamr-collect
+	go get github.com/fcovatti/rtlamr-collect
 
 This will produce the binary `$GOPATH/bin/rtlamr-collect`. For convenience it's common to add `$GOPATH/bin` to the path.
 
