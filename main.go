@@ -58,6 +58,10 @@ type IDM struct {
 	IntervalIdx  byte     `json:"ConsumptionIntervalCount"`
 	IntervalDiff []uint16 `json:"DifferentialConsumptionIntervals"`
 	Outage       []byte   `json:"PowerOutageFlags"`
+
+	Consumption    uint32 `json:"LastConsumption"`
+	ConsumptionNet uint32 `json:"LastConsumptionNet"`
+	Generation     uint32 `json:"LastGeneration"`
 }
 
 // AddPoints adds differential usage data to a batch of points.
@@ -79,6 +83,35 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 	copy(outageBytes[2:], idm.Outage)
 	outage := binary.BigEndian.Uint64(outageBytes)
 
+	tags := map[string]string{
+		"protocol":      msg.Type,
+		"msg_type":      "cumulative",
+		"endpoint_type": strconv.Itoa(int(idm.EndpointType)),
+		"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
+	}
+
+	fields := map[string]interface{}{
+		"consumption": int64(idm.Consumption),
+	}
+
+	if msg.Type == "NetIDM" {
+		fields["generation"] = int64(idm.Generation)
+		fields["consumption_net"] = int64(idm.ConsumptionNet)
+	}
+
+	pt, err := client.NewPoint(measurement, tags, fields, msg.Time.Add(-intervalOffset))
+	if err != nil {
+		// I'm not sure what kinds of errors we might encounter when making a
+		// new point, but don't hard-stop if we encounter one. Most other
+		// operations should still succeed.
+		log.Println(errors.Wrap(err, "new point"))
+	} else {
+		bp.AddPoint(pt)
+	}
+
+	// Re-use tags from cumulative message.
+	tags["msg_type"] = "differential"
+
 	// For each differential interval.
 	for idx, usage := range idm.IntervalDiff {
 		// Calculate the interval.
@@ -97,13 +130,6 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 			if diff > -threshold && diff < threshold {
 				return
 			}
-		}
-
-		tags := map[string]string{
-			"protocol":      msg.Type,
-			"msg_type":      "differential",
-			"endpoint_type": strconv.Itoa(int(idm.EndpointType)),
-			"endpoint_id":   strconv.Itoa(int(idm.EndpointID)),
 		}
 
 		fields := map[string]interface{}{
