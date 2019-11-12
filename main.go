@@ -313,6 +313,14 @@ func (mm MeterMap) Preload(c client.Client, database string) {
 	}
 }
 
+func lookupEnv(name string, dryRun bool) string {
+	val, ok := os.LookupEnv(name)
+	if !ok && !dryRun {
+		log.Fatalf("%q undefined\n", name)
+	}
+	return val
+}
+
 func init() {
 	log.SetFlags(log.Lshortfile | log.Lmicroseconds)
 }
@@ -324,27 +332,12 @@ func main() {
 	// checksum, so they are picked up by both decoders, but have different
 	// internal field layout.
 	_, strict := os.LookupEnv("COLLECT_STRICTIDM")
-	_ = strict
+	_, dryRun := os.LookupEnv("COLLECT_INFLUXDB_DRYRUN")
 
-	username, ok := os.LookupEnv("COLLECT_INFLUXDB_USER")
-	if !ok {
-		log.Fatal("COLLECT_INFLUXDB_USER undefined")
-	}
-
-	password, ok := os.LookupEnv("COLLECT_INFLUXDB_PASS")
-	if !ok {
-		log.Fatal("COLLECT_INFLUXDB_PASS undefined")
-	}
-
-	hostname, ok := os.LookupEnv("COLLECT_INFLUXDB_HOSTNAME")
-	if !ok {
-		log.Fatal("COLLECT_INFLUXDB_HOSTNAME undefined")
-	}
-
-	database, ok := os.LookupEnv("COLLECT_INFLUXDB_DATABASE")
-	if !ok {
-		log.Fatal("COLLECT_INFLUXDB_DATABASE undefined")
-	}
+	username := lookupEnv("COLLECT_INFLUXDB_USER", dryRun)
+	password := lookupEnv("COLLECT_INFLUXDB_PASS", dryRun)
+	hostname := lookupEnv("COLLECT_INFLUXDB_HOSTNAME", dryRun)
+	database := lookupEnv("COLLECT_INFLUXDB_DATABASE", dryRun)
 
 	cfg := client.HTTPConfig{
 		Addr:     hostname,
@@ -352,15 +345,20 @@ func main() {
 		Password: password,
 	}
 
-	log.Printf("connecting to %q@%q", username, hostname)
-	c, err := client.NewHTTPClient(cfg)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	defer c.Close()
-
+	var c client.Client
 	mm := MeterMap{}
-	mm.Preload(c, database)
+
+	if !dryRun {
+		log.Printf("connecting to %q@%q", username, hostname)
+		c, err := client.NewHTTPClient(cfg)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		defer c.Close()
+
+		mm.Preload(c, database)
+		log.Printf("preloaded %d meters\n", len(mm))
+	}
 
 	// Store points in the given database with second resolution.
 	bpConfig := client.BatchPointsConfig{
@@ -431,8 +429,10 @@ func main() {
 			log.Printf("%+v\n", p)
 		}
 
-		if err := c.Write(bp); err != nil {
-			log.Println(err)
+		if !dryRun {
+			if err := c.Write(bp); err != nil {
+				log.Println(err)
+			}
 		}
 	}
 }
