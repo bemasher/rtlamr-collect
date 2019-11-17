@@ -59,9 +59,10 @@ type IDM struct {
 	IntervalDiff []uint16 `json:"DifferentialConsumptionIntervals"`
 	Outage       []byte   `json:"PowerOutageFlags"`
 
-	Consumption    uint32 `json:"LastConsumption"`
-	ConsumptionNet uint32 `json:"LastConsumptionNet"`
-	Generation     uint32 `json:"LastGeneration"`
+	IDMConsumption       uint32 `json:"LastConsumptionCount"`
+	NetIDMConsumption    uint32 `json:"LastConsumption"`
+	NetIDMConsumptionNet uint32 `json:"LastConsumptionNet"`
+	NetIDMGeneration     uint32 `json:"LastGeneration"`
 }
 
 // AddPoints adds differential usage data to a batch of points.
@@ -91,12 +92,13 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 	}
 
 	fields := map[string]interface{}{
-		"consumption": int64(idm.Consumption),
+		"consumption": int64(idm.IDMConsumption),
 	}
 
 	if msg.Type == "NetIDM" {
-		fields["generation"] = int64(idm.Generation)
-		fields["consumption_net"] = int64(idm.ConsumptionNet)
+		fields["consumption"] = int64(idm.NetIDMConsumption)
+		fields["generation"] = int64(idm.NetIDMGeneration)
+		fields["consumption_net"] = int64(idm.NetIDMConsumptionNet)
 	}
 
 	pt, err := client.NewPoint(measurement, tags, fields, msg.Time.Add(-intervalOffset))
