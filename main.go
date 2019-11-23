@@ -378,7 +378,8 @@ func main() {
 
 	if !dryRun {
 		log.Printf("connecting to %q@%q", username, hostname)
-		c, err := client.NewHTTPClient(cfg)
+		var err error
+		c, err = client.NewHTTPClient(cfg)
 		if err != nil {
 			log.Fatalln(err)
 		}
