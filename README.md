@@ -29,6 +29,8 @@ rtlamr-collect is entirely configured through environment variables:
  * `COLLECT_INFLUXDB_DATABASE=rtlamr` InfluxDB database to connect to.
  * `COLLECT_INFLUXDB_USER=username` InfluxDB username to authenticate with.
  * `COLLECT_INFLUXDB_PASS=password` InfluxDB password to authenticate with.
+ * `COLLECT_INFLUXDB_CLIENT_CERT=influxdb.crt` (optional) X.509 certificate to use for InfluxDB TLS client authentication
+ * `COLLECT_INFLUXDB_CLIENT_KEY=influxdb.key` (optional) X.509 private key to use for InfluxDB TLS client authentication
  * `COLLECT_STRICTIDM=1` Ignores IDM with type 8 and NetIDM with type 7. This should probably always be enabled if you are simultaneously listening to IDM and NetIDM.
 
 At a minimum rtlamr must have the following environment variables defined:
