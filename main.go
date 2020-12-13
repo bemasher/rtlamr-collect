@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -367,10 +368,23 @@ func main() {
 	hostname := lookupEnv("COLLECT_INFLUXDB_HOSTNAME", dryRun)
 	database := lookupEnv("COLLECT_INFLUXDB_DATABASE", dryRun)
 
+	tlsConfig := tls.Config{}
+
+	clientCertFile, ok := os.LookupEnv("COLLECT_INFLUXDB_CLIENT_CERT")
+	if ok && !dryRun {
+		clientKeyFile := lookupEnv("COLLECT_INFLUXDB_CLIENT_KEY", dryRun)
+		clientCert, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile)
+		if err != nil {
+			log.Fatalf("could not load client certificate: %s\n", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{clientCert}
+	}
+
 	cfg := client.HTTPConfig{
-		Addr:     hostname,
-		Username: username,
-		Password: password,
+		Addr:      hostname,
+		Username:  username,
+		Password:  password,
+		TLSConfig: &tlsConfig,
 	}
 
 	var c client.Client
