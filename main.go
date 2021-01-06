@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -26,22 +27,23 @@ import (
 	"strconv"
 	"time"
 
-	client "github.com/influxdata/influxdb1-client/v2"
+	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	"github.com/influxdata/influxdb-client-go/v2/api/write"
 	"github.com/pkg/errors"
+	"github.com/vmihailenco/msgpack"
+	"go.etcd.io/bbolt"
+	"golang.org/x/xerrors"
 )
 
-const (
-	measurement = "rtlamr"
-	threshold   = 30 * time.Second
-)
+const threshold = 30 * time.Second
 
-// LogMessage is a encapsulating type rtlamr uses for all messages. It contains
+// LogMessage is an encapsulating type rtlamr uses for all messages. It contains
 // time, message type, and the encapsulated message.
 type LogMessage struct {
 	Time time.Time
 	Type string
 
-	// Defer decoding until we know what type the message is.
+	// Defer decoding until the message type is known.
 	Message json.RawMessage
 }
 
@@ -67,18 +69,23 @@ type IDM struct {
 }
 
 // AddPoints adds differential usage data to a batch of points.
-func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
+func (idm IDM) AddPoints(msg LogMessage, eachFn EachFn) {
 	// TransmitTime is 1/16ths of a second since the interval began.
 	intervalOffset := time.Duration(idm.TransmitTime) * time.Second / 16
 
+	meter := Meter{idm.EndpointID, idm.EndpointType, msg.Type}
+
 	// Does this meter have any state?
-	state, seen := idm.Meters[Meter{idm.EndpointID, idm.EndpointType, msg.Type}]
+	state, seen := idm.Meters.m[meter]
 
 	// Update the meter map with new state.
-	idm.Meters[Meter{idm.EndpointID, idm.EndpointType, msg.Type}] = LastMessage{
-		msg.Time.Add(-intervalOffset),
-		uint(idm.IntervalIdx),
-	}
+	idm.Meters.Update(
+		meter,
+		LastMessage{
+			msg.Time.Add(-intervalOffset),
+			uint(idm.IntervalIdx),
+		},
+	)
 
 	// Convert outage flags (6 bytes) to uint64 (8 bytes)
 	outageBytes := make([]uint8, 8)
@@ -102,15 +109,7 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 		fields["consumption_net"] = int64(idm.NetIDMConsumptionNet)
 	}
 
-	pt, err := client.NewPoint(measurement, tags, fields, msg.Time.Add(-intervalOffset))
-	if err != nil {
-		// I'm not sure what kinds of errors we might encounter when making a
-		// new point, but don't hard-stop if we encounter one. Most other
-		// operations should still succeed.
-		log.Println(errors.Wrap(err, "new point"))
-	} else {
-		bp.AddPoint(pt)
-	}
+	eachFn(msg.Time.Add(-intervalOffset), tags, fields)
 
 	// Re-use tags from cumulative message.
 	tags["msg_type"] = "differential"
@@ -145,19 +144,7 @@ func (idm IDM) AddPoints(msg LogMessage, bp client.BatchPoints) {
 			fields["outage"] = int64(1)
 		}
 
-		pt, err := client.NewPoint(
-			measurement,
-			tags,
-			fields,
-			intervalTime,
-		)
-
-		if err != nil {
-			log.Println(errors.Wrap(err, "new point"))
-			continue
-		}
-
-		bp.AddPoint(pt)
+		eachFn(intervalTime, tags, fields)
 	}
 }
 
@@ -168,28 +155,18 @@ type SCM struct {
 	Consumption  uint32 `json:"Consumption"`
 }
 
-// AddPoints adds cummulative usage data to a batch of points.
-func (scm SCM) AddPoints(msg LogMessage, bp client.BatchPoints) {
-	pt, err := client.NewPoint(
-		measurement,
-		map[string]string{
-			"protocol":      msg.Type,
-			"msg_type":      "cumulative",
-			"endpoint_type": strconv.Itoa(int(scm.EndpointType)),
-			"endpoint_id":   strconv.Itoa(int(scm.EndpointID)),
-		},
-		map[string]interface{}{
-			"consumption": int64(scm.Consumption),
-		},
-		msg.Time,
-	)
-
-	if err != nil {
-		log.Println(errors.Wrap(err, "new point"))
-		return
+// AddPoints adds cumulative usage data to a batch of points.
+func (scm SCM) AddPoints(msg LogMessage, eachFn EachFn) {
+	tags := map[string]string{
+		"protocol":      msg.Type,
+		"msg_type":      "cumulative",
+		"endpoint_type": strconv.Itoa(int(scm.EndpointType)),
+		"endpoint_id":   strconv.Itoa(int(scm.EndpointID)),
 	}
-
-	bp.AddPoint(pt)
+	fields := map[string]interface{}{
+		"consumption": int64(scm.Consumption),
+	}
+	eachFn(msg.Time, tags, fields)
 }
 
 // SCMPlus handles Standard Consumption Message Plus messages from rtlamr.
@@ -199,28 +176,19 @@ type SCMPlus struct {
 	Consumption  uint32 `json:"Consumption"`
 }
 
-// AddPoints adds cummulative usage data to a batch of points.
-func (scmplus SCMPlus) AddPoints(msg LogMessage, bp client.BatchPoints) {
-	pt, err := client.NewPoint(
-		measurement,
-		map[string]string{
-			"protocol":      msg.Type,
-			"msg_type":      "cumulative",
-			"endpoint_type": strconv.Itoa(int(scmplus.EndpointType)),
-			"endpoint_id":   strconv.Itoa(int(scmplus.EndpointID)),
-		},
-		map[string]interface{}{
-			"consumption": int64(scmplus.Consumption),
-		},
-		msg.Time,
-	)
-
-	if err != nil {
-		log.Println(errors.Wrap(err, "new point"))
-		return
+// AddPoints adds cumulative usage data to a batch of points.
+func (scmplus SCMPlus) AddPoints(msg LogMessage, eachFn EachFn) {
+	tags := map[string]string{
+		"protocol":      msg.Type,
+		"msg_type":      "cumulative",
+		"endpoint_type": strconv.Itoa(int(scmplus.EndpointType)),
+		"endpoint_id":   strconv.Itoa(int(scmplus.EndpointID)),
+	}
+	fields := map[string]interface{}{
+		"consumption": int64(scmplus.Consumption),
 	}
 
-	bp.AddPoint(pt)
+	eachFn(msg.Time, tags, fields)
 }
 
 // R900 handles Neptune R900 messages from rtlamr, both R900 and R900BCD.
@@ -236,65 +204,36 @@ type R900 struct {
 }
 
 // AddPoints adds cummulative usage data to a batch of points.
-func (r900 R900) AddPoints(msg LogMessage, bp client.BatchPoints) {
-	pt, err := client.NewPoint(
-		measurement,
-		map[string]string{
-			"protocol":      msg.Type,
-			"msg_type":      "cumulative",
-			"endpoint_type": strconv.Itoa(int(r900.EndpointType)),
-			"endpoint_id":   strconv.Itoa(int(r900.EndpointID)),
-		},
-		map[string]interface{}{
-			"consumption": int64(r900.Consumption),
-			"nouse":       int64(r900.NoUse),
-			"backflow":    int64(r900.BackFlow),
-			"leak":        int64(r900.Leak),
-			"leak_now":    int64(r900.LeakNow),
-		},
-		msg.Time,
-	)
-
-	if err != nil {
-		log.Println()
-		return
+func (r900 R900) AddPoints(msg LogMessage, eachFn EachFn) {
+	tags := map[string]string{
+		"protocol":      msg.Type,
+		"msg_type":      "cumulative",
+		"endpoint_type": strconv.Itoa(int(r900.EndpointType)),
+		"endpoint_id":   strconv.Itoa(int(r900.EndpointID)),
 	}
 
-	bp.AddPoint(pt)
+	fields := map[string]interface{}{
+		"consumption": int64(r900.Consumption),
+		"nouse":       int64(r900.NoUse),
+		"backflow":    int64(r900.BackFlow),
+		"leak":        int64(r900.Leak),
+		"leak_now":    int64(r900.LeakNow),
+	}
+
+	eachFn(msg.Time, tags, fields)
 }
 
 // Message knows how to add points to a batch of points.
 type Message interface {
-	AddPoints(LogMessage, client.BatchPoints)
+	AddPoints(LogMessage, EachFn)
 }
+
+type EachFn func(t time.Time, tags map[string]string, fields map[string]interface{})
 
 type Meter struct {
 	EndpointID   uint32
 	EndpointType uint8
 	Protocol     string
-}
-
-func NewMeter(tags map[string]string) (m Meter, err error) {
-	endpoint_id, err := strconv.ParseUint(tags["endpoint_id"], 10, 32)
-	if err != nil {
-		return m, errors.Wrap(err, "new meter")
-	}
-
-	endpoint_type, err := strconv.ParseUint(tags["endpoint_type"], 10, 8)
-	if err != nil {
-		return m, errors.Wrap(err, "new meter")
-	}
-
-	protocol, ok := tags["protocol"]
-	if !ok {
-		return m, errors.New("missing protocol tag")
-	}
-
-	return Meter{
-		uint32(endpoint_id),
-		uint8(endpoint_type),
-		protocol,
-	}, nil
 }
 
 // LastMessage represents a meter's last interval and time.
@@ -304,42 +243,90 @@ type LastMessage struct {
 }
 
 // MeterMap keeps meter state to avoid sending duplicate data to the database.
-type MeterMap map[Meter]LastMessage
+type MeterMap struct {
+	db *bbolt.DB
+	m  map[Meter]LastMessage
+}
 
-// Preload retrieves state for all previously seen differential meters.
-func (mm MeterMap) Preload(c client.Client, database string) {
-	q := client.NewQuery(`
-		SELECT last(interval)
-		FROM rtlamr
-		WHERE msg_type = 'differential'
-		GROUP BY protocol, endpoint_id, endpoint_type
-	`, database, "s")
+func NewMeterMap(filename string) (m MeterMap, err error) {
+	m = MeterMap{
+		m: map[Meter]LastMessage{},
+	}
 
-	res, err := c.Query(q)
+	m.db, err = bbolt.Open(filename, 0600, nil)
 	if err != nil {
-		log.Println(errors.Wrap(err, "meter map preload"))
-		return
+		return m, xerrors.Errorf("bbolt.Open: %w", err)
 	}
 
-	for _, r := range res.Results {
-		for _, s := range r.Series {
-			meter, err := NewMeter(s.Tags)
-			if err != nil {
-				log.Println(errors.Wrap(err, "new meter"))
-				continue
-			}
-
-			for _, v := range s.Values {
-				unixEpoch, _ := v[0].(json.Number).Int64()
-				interval, _ := v[1].(json.Number).Int64()
-
-				mm[meter] = LastMessage{
-					time.Unix(unixEpoch, 0),
-					uint(interval),
-				}
-			}
+	err = m.db.View(func(tx *bbolt.Tx) error {
+		bkt := tx.Bucket([]byte("meters"))
+		if bkt == nil {
+			return nil
 		}
+
+		err = bkt.ForEach(func(k, v []byte) error {
+			var (
+				meter Meter
+				msg   LastMessage
+			)
+
+			err := msgpack.Unmarshal(k, &meter)
+			if err != nil {
+				return xerrors.Errorf("msgpack.Unmarshal: %w", err)
+			}
+
+			err = msgpack.Unmarshal(v, &msg)
+			if err != nil {
+				return xerrors.Errorf("msgpack.Unmarshal: %w", err)
+			}
+
+			m.m[meter] = msg
+
+			return nil
+		})
+
+		return nil
+	})
+	if err != nil {
+		return m, xerrors.Errorf("m.db.View: %w", err)
 	}
+
+	return m, nil
+}
+
+func (m *MeterMap) Update(meter Meter, msg LastMessage) (err error) {
+	err = m.db.Update(func(tx *bbolt.Tx) error {
+		tx.OnCommit(func() {
+			m.m[meter] = msg
+		})
+
+		bkt, err := tx.CreateBucketIfNotExists([]byte("meters"))
+		if err != nil {
+			return xerrors.Errorf("tx.CreateBucketIfNotExists: %w", err)
+		}
+
+		key, err := msgpack.Marshal(meter)
+		if err != nil {
+			return xerrors.Errorf("msgpack.Marshal: %w", err)
+		}
+
+		val, err := msgpack.Marshal(msg)
+		if err != nil {
+			return xerrors.Errorf("msgpack.Marshal: %w", err)
+		}
+
+		err = bkt.Put(key, val)
+		if err != nil {
+			return xerrors.Errorf("bkt.Put: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return xerrors.Errorf("m.db.View: %w", err)
+	}
+
+	return nil
 }
 
 func lookupEnv(name string, dryRun bool) string {
@@ -363,12 +350,13 @@ func main() {
 	_, strict := os.LookupEnv("COLLECT_STRICTIDM")
 	_, dryRun := os.LookupEnv("COLLECT_INFLUXDB_DRYRUN")
 
-	username := lookupEnv("COLLECT_INFLUXDB_USER", dryRun)
-	password := lookupEnv("COLLECT_INFLUXDB_PASS", dryRun)
 	hostname := lookupEnv("COLLECT_INFLUXDB_HOSTNAME", dryRun)
-	database := lookupEnv("COLLECT_INFLUXDB_DATABASE", dryRun)
+	token := lookupEnv("COLLECT_INFLUXDB_TOKEN", dryRun)
+	org := lookupEnv("COLLECT_INFLUXDB_ORG", dryRun)
+	bucket := lookupEnv("COLLECT_INFLUXDB_BUCKET", dryRun)
+	measurement := lookupEnv("COLLECT_INFLUXDB_MEASUREMENT", dryRun)
 
-	tlsConfig := tls.Config{}
+	opts := influxdb2.DefaultOptions()
 
 	clientCertFile, ok := os.LookupEnv("COLLECT_INFLUXDB_CLIENT_CERT")
 	if ok && !dryRun {
@@ -377,37 +365,28 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not load client certificate: %s\n", err)
 		}
-		tlsConfig.Certificates = []tls.Certificate{clientCert}
+
+		opts.SetTLSConfig(&tls.Config{
+			Certificates: []tls.Certificate{clientCert},
+		})
 	}
 
-	cfg := client.HTTPConfig{
-		Addr:      hostname,
-		Username:  username,
-		Password:  password,
-		TLSConfig: &tlsConfig,
+	mm, err := NewMeterMap("meters.db")
+	if err != nil {
+		log.Fatalf("%+v\n", xerrors.Errorf("NewMeterMap: %w", err))
 	}
+	defer mm.db.Close()
 
-	var c client.Client
-	mm := MeterMap{}
+	var client influxdb2.Client
 
 	if !dryRun {
-		log.Printf("connecting to %q@%q", username, hostname)
-		var err error
-		c, err = client.NewHTTPClient(cfg)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		defer c.Close()
-
-		mm.Preload(c, database)
-		log.Printf("preloaded %d meters\n", len(mm))
+		log.Printf("connecting to %q", hostname)
+		client = influxdb2.NewClientWithOptions(hostname, token, opts)
+		defer client.Close()
 	}
 
-	// Store points in the given database with second resolution.
-	bpConfig := client.BatchPointsConfig{
-		Database:  database,
-		Precision: "s",
-	}
+	// Create a blocking write api.
+	api := client.WriteAPIBlocking(org, bucket)
 
 	// Read lines from stdin.
 	stdinBuf := bufio.NewScanner(os.Stdin)
@@ -442,13 +421,6 @@ func main() {
 			continue
 		}
 
-		// Create a new batch of points.
-		bp, err := client.NewBatchPoints(bpConfig)
-		if err != nil {
-			log.Println(errors.Wrap(err, "new batch points"))
-			continue
-		}
-
 		// If current message is an IDM.
 		if idm, ok := msg.(*IDM); ok {
 			// Store meter state for discarding duplicate data.
@@ -465,16 +437,18 @@ func main() {
 			}
 		}
 
-		// Messages know how to add points to a batch.
-		msg.AddPoints(logMsg, bp)
+		pts := []*write.Point{}
 
-		for _, p := range bp.Points() {
-			log.Printf("%+v\n", p)
-		}
+		// Messages know how to add points to a batch.
+		msg.AddPoints(logMsg, func(t time.Time, tags map[string]string, fields map[string]interface{}) {
+			pt := write.NewPoint(measurement, tags, fields, t)
+			pts = append(pts, pt)
+		})
 
 		if !dryRun {
-			if err := c.Write(bp); err != nil {
-				log.Println(err)
+			err = api.WritePoint(context.Background(), pts...)
+			if err != nil {
+				log.Fatalf("%+v\n", xerrors.Errorf("api.WritePoint: %w", err))
 			}
 		}
 	}
