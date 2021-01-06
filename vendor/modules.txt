@@ -1,6 +1,0 @@
-# github.com/influxdata/influxdb1-client v0.0.0-20190402204710-8ff2fc3824fc
-github.com/influxdata/influxdb1-client/v2
-github.com/influxdata/influxdb1-client/models
-github.com/influxdata/influxdb1-client/pkg/escape
-# github.com/pkg/errors v0.8.1
-github.com/pkg/errors
