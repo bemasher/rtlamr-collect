@@ -2,7 +2,7 @@
 rtlamr-collect provides data aggregation for rtlamr. This tool in tandem with rtlamr provides easy and accurate data collection.
 
 ### Requirements
- * GoLang >=1.9.2 (Go build environment setup guide: http://golang.org/doc/code.html)
+ * GoLang >=1.13 (Go build environment setup guide: http://golang.org/doc/code.html)
  * rtlamr
  * InfluxDB >=1.4.2
 
