@@ -22,12 +22,16 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	log "github.com/sirupsen/logrus"
+
 	"github.com/influxdata/influxdb-client-go/v2/api/write"
 	"github.com/pkg/errors"
 	"github.com/vmihailenco/msgpack"
@@ -338,7 +342,19 @@ func lookupEnv(name string, dryRun bool) string {
 }
 
 func init() {
-	log.SetFlags(log.Lshortfile | log.Lmicroseconds)
+	_, f, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(f) + "\\"
+
+	log.SetFormatter(&log.TextFormatter{
+		ForceColors:     true,
+		FullTimestamp:   true,
+		TimestampFormat: "2006-01-02 15:04:05.999",
+		CallerPrettyfier: func(frame *runtime.Frame) (fn, file string) {
+			file = strings.TrimPrefix(filepath.Clean(frame.File), dir)
+			return frame.Function, fmt.Sprintf("%s:%d", file, frame.Line)
+		},
+	})
+	log.SetReportCaller(true)
 }
 
 func main() {
@@ -349,6 +365,13 @@ func main() {
 	// internal field layout.
 	_, strict := os.LookupEnv("COLLECT_STRICTIDM")
 	_, dryRun := os.LookupEnv("COLLECT_INFLUXDB_DRYRUN")
+
+	// One of Panic, Fatal, Error, Warn, Info, Debug, Trace. Defaults to Info.
+	levelStr, _ := os.LookupEnv("COLLECT_LOGLEVEL")
+	level, err := log.ParseLevel(levelStr)
+	if err == nil {
+		log.SetLevel(level)
+	}
 
 	hostname := lookupEnv("COLLECT_INFLUXDB_HOSTNAME", dryRun)
 	token := lookupEnv("COLLECT_INFLUXDB_TOKEN", dryRun)
@@ -381,9 +404,9 @@ func main() {
 
 	if !dryRun {
 		log.Printf("connecting to %q", hostname)
-		client = influxdb2.NewClientWithOptions(hostname, token, opts)
-		defer client.Close()
 	}
+	client = influxdb2.NewClientWithOptions(hostname, token, opts)
+	defer client.Close()
 
 	// Create a blocking write api.
 	api := client.WriteAPIBlocking(org, bucket)
@@ -392,6 +415,7 @@ func main() {
 	stdinBuf := bufio.NewScanner(os.Stdin)
 	for stdinBuf.Scan() {
 		line := stdinBuf.Bytes()
+		log.Trace(string(line))
 
 		// Parse a log message.
 		var logMsg LogMessage

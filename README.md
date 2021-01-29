@@ -15,6 +15,7 @@ This will produce the binary `$GOPATH/bin/rtlamr-collect`. For convenience it's 
 
 ### Usage
 rtlamr-collect is entirely configured through environment variables:
+ * `COLLECT_LOGLEVEL` Specifies what level of logging should be written to stderr, one of Panic, Fatal, Error, Warn, Info, Debug, Trace. Defaults to Info. Trace will print received messages.
  * `COLLECT_INFLUXDB_DRYRUN` Receive data, but do not commit to InfluxDB.
  * `COLLECT_INFLUXDB_HOSTNAME=https://localhost:8086/` InfluxDB hostname to write data to.
  * `COLLECT_INFLUXDB_TOKEN=########` InfluxDB token with write access to bucket. When connecting to a v1.8 instance, the token is of the form: `username:password`
