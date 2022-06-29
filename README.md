@@ -25,6 +25,10 @@ rtlamr-collect is entirely configured through environment variables:
  * `COLLECT_INFLUXDB_CLIENT_CERT=influxdb.crt` (optional) X.509 certificate to use for InfluxDB TLS client authentication
  * `COLLECT_INFLUXDB_CLIENT_KEY=influxdb.key` (optional) X.509 private key to use for InfluxDB TLS client authentication
  * `COLLECT_STRICTIDM=1` Ignores IDM with type 8 and NetIDM with type 7. This should probably always be enabled if you are simultaneously listening to IDM and NetIDM.
+ * `COLLECT_MQTT_SERVER` MQTT server address to send readings to
+ * `COLLECT_MQTT_PORT` If using non-standard (not 1883) MQTT port, please specify here. Defaults to 1883
+ * `COLLECT_MQTT_USERNAME` Username to connect to MQTT server.
+ * `COLLECT_MQTT_PASSWORD` If MQTT password authentication is used, provide password here. 
 
 At a minimum rtlamr must have the following environment variables defined:
  * `RTLAMR_FORMAT=json` rtlamr-collect input must be json.
@@ -55,6 +59,14 @@ Scaling received data so that it represents real units depends on the meter bein
 Data visualization is left as an exercise for the user. I have had a good experience with grafana, however Chronograf and others should work equally well.
 
 ![Grafana Power Usage Dashboard](capture.png "Grafana Power Usage Dashboard")
+
+### MQTT
+
+`rtlamr-collect` can post raw messages to MQTT server. Use `COLLECT_MQTT_SERVER` and the other `COLLECT_MQTT_*` configuration values to specify connection details.
+
+It will post its status to `rtlamr/collect` topic (birth & last will messages) upon starting and stopping respectfully.
+
+Raw messages that are coming from `rtlamr` can then be found under `rtlamr` topic, separated by endpoint-id specific topics, for example `rtlamr/29025836`.
 
 ### Feedback
 If you have any general questions or feedback leave a comment below. For bugs, feature suggestions and anything directly relating to the program itself, submit an issue in github.
