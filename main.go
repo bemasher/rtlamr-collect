@@ -22,6 +22,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,6 +32,8 @@ import (
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	log "github.com/sirupsen/logrus"
+
+	MQTT "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/influxdata/influxdb-client-go/v2/api/write"
 	"github.com/pkg/errors"
@@ -152,6 +155,10 @@ func (idm IDM) AddPoints(msg LogMessage, eachFn EachFn) {
 	}
 }
 
+func (idm IDM) GetEndpointId() uint32 {
+	return idm.EndpointID
+}
+
 // SCM handles Standard Consumption Messages from rtlamr.
 type SCM struct {
 	EndpointID   uint32 `json:"ID"`
@@ -171,6 +178,10 @@ func (scm SCM) AddPoints(msg LogMessage, eachFn EachFn) {
 		"consumption": int64(scm.Consumption),
 	}
 	eachFn(msg.Time, tags, fields)
+}
+
+func (scm SCM) GetEndpointId() uint32 {
+	return scm.EndpointID
 }
 
 // SCMPlus handles Standard Consumption Message Plus messages from rtlamr.
@@ -193,6 +204,10 @@ func (scmplus SCMPlus) AddPoints(msg LogMessage, eachFn EachFn) {
 	}
 
 	eachFn(msg.Time, tags, fields)
+}
+
+func (scmplus SCMPlus) GetEndpointId() uint32 {
+	return scmplus.EndpointID
 }
 
 // R900 handles Neptune R900 messages from rtlamr, both R900 and R900BCD.
@@ -227,9 +242,14 @@ func (r900 R900) AddPoints(msg LogMessage, eachFn EachFn) {
 	eachFn(msg.Time, tags, fields)
 }
 
+func (r900 R900) GetEndpointId() uint32 {
+	return r900.EndpointID
+}
+
 // Message knows how to add points to a batch of points.
 type Message interface {
 	AddPoints(LogMessage, EachFn)
+	GetEndpointId() uint32
 }
 
 type EachFn func(t time.Time, tags map[string]string, fields map[string]interface{})
@@ -341,6 +361,12 @@ func lookupEnv(name string, dryRun bool) string {
 	return val
 }
 
+func sendMqttMessage(client MQTT.Client, topic string, payload string) {
+	if token := client.Publish(topic, 0, false, payload); token.Wait() && token.Error() != nil {
+		fmt.Printf("MQTT ERROR, %s\n", token.Error())
+	}
+}
+
 func init() {
 	_, f, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(f) + "\\"
@@ -378,6 +404,36 @@ func main() {
 	org := lookupEnv("COLLECT_INFLUXDB_ORG", dryRun)
 	bucket := lookupEnv("COLLECT_INFLUXDB_BUCKET", dryRun)
 	measurement := lookupEnv("COLLECT_INFLUXDB_MEASUREMENT", dryRun)
+
+	var mqttClient MQTT.Client
+	mqttServerAddress, ok := os.LookupEnv("COLLECT_MQTT_SERVER")
+	if ok && !dryRun {
+		mqttPort, isMqttPortSet := os.LookupEnv("COLLECT_MQTT_PORT")
+		if !isMqttPortSet {
+			mqttPort = "1883"
+		}
+		mqttUsername := lookupEnv("COLLECT_MQTT_USERNAME", dryRun)
+		mqttOpts := MQTT.NewClientOptions().AddBroker("tcp://" + mqttServerAddress + ":" + mqttPort)
+		mqttOpts.SetUsername(mqttUsername)
+		mqttPassword, isMqttPasswordSet := os.LookupEnv("COLLECT_MQTT_PASSWORD")
+		if isMqttPasswordSet {
+			mqttOpts.SetPassword(mqttPassword)
+		}
+		mqttOpts.SetAutoReconnect(true)
+		mqttOpts.SetClientID("rtlamr-collect-" + strconv.Itoa(rand.Intn(100)))
+		mqttOpts.SetKeepAlive(2 * time.Second)
+		mqttOpts.SetPingTimeout(1 * time.Second)
+		mqttOpts.SetWill("rtlamr/collect", `{ "status": "down" }`, 0, false)
+
+		mqttOpts.OnConnect = func(client MQTT.Client) {
+			fmt.Printf("MQTT: CONNECTED TO %s\n", mqttServerAddress)
+		}
+		mqttClient = MQTT.NewClient(mqttOpts)
+		if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
+			panic(token.Error())
+		}
+		mqttClient.Publish("rtlamr/collect", 0, false, `{ "status": "up" }`)
+	}
 
 	opts := influxdb2.DefaultOptions()
 
@@ -473,6 +529,14 @@ func main() {
 			err = api.WritePoint(context.Background(), pts...)
 			if err != nil {
 				log.Fatalf("%+v\n", xerrors.Errorf("api.WritePoint: %w", err))
+			}
+
+			// MQTT
+			if mqttClient != nil && mqttClient.IsConnected() {
+				topic := "rtlamr/" + strconv.FormatUint(uint64(msg.GetEndpointId()), 10)
+				sendMqttMessage(mqttClient, topic, fmt.Sprintf("%s\n", logMsg.Message))
+			} else {
+				fmt.Println("MQTT: CLIENT NOT CONNECTED")
 			}
 		}
 	}
