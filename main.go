@@ -406,8 +406,9 @@ func main() {
 	measurement := lookupEnv("COLLECT_INFLUXDB_MEASUREMENT", dryRun)
 
 	var mqttClient MQTT.Client
-	mqttServerAddress, ok := os.LookupEnv("COLLECT_MQTT_SERVER")
-	if ok && !dryRun {
+	var mqttRootTopic string
+	mqttServerAddress, mqttEnabled := os.LookupEnv("COLLECT_MQTT_SERVER")
+	if mqttEnabled && !dryRun {
 		mqttPort, isMqttPortSet := os.LookupEnv("COLLECT_MQTT_PORT")
 		if !isMqttPortSet {
 			mqttPort = "1883"
@@ -419,11 +420,23 @@ func main() {
 		if isMqttPasswordSet {
 			mqttOpts.SetPassword(mqttPassword)
 		}
-		mqttOpts.SetAutoReconnect(true)
-		mqttOpts.SetClientID("rtlamr-collect-" + strconv.Itoa(rand.Intn(100)))
+		isMqttRootTopicSet := false
+		mqttRootTopic, isMqttRootTopicSet = os.LookupEnv("COLLECT_MQTT_ROOT_TOPIC")
+		if !isMqttRootTopicSet {
+			mqttRootTopic = "rtlamr"
+		}
+		_, mqttAutoReconnect := os.LookupEnv("COLLECT_MQTT_AUTO_RECONNECT")
+		mqttClientId, isMqttClientIdSet := os.LookupEnv("COLLECT_MQTT_CLIENT_ID")
+
+		if mqttAutoReconnect {
+			mqttOpts.SetAutoReconnect(mqttAutoReconnect)
+		}
+		if isMqttClientIdSet {
+			mqttOpts.SetClientID(mqttClientId + "-" + strconv.Itoa(rand.Intn(100)))
+		}
 		mqttOpts.SetKeepAlive(2 * time.Second)
 		mqttOpts.SetPingTimeout(1 * time.Second)
-		mqttOpts.SetWill("rtlamr/collect", `{ "status": "down" }`, 0, false)
+		mqttOpts.SetWill(mqttRootTopic+"/collect", `{ "status": "down" }`, 0, false)
 
 		mqttOpts.OnConnect = func(client MQTT.Client) {
 			fmt.Printf("MQTT: CONNECTED TO %s\n", mqttServerAddress)
@@ -432,7 +445,7 @@ func main() {
 		if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
 			panic(token.Error())
 		}
-		mqttClient.Publish("rtlamr/collect", 0, false, `{ "status": "up" }`)
+		sendMqttMessage(mqttClient, mqttRootTopic+"/collect", `{ "status": "up" }`)
 	}
 
 	opts := influxdb2.DefaultOptions()
@@ -532,11 +545,13 @@ func main() {
 			}
 
 			// MQTT
-			if mqttClient != nil && mqttClient.IsConnected() {
-				topic := "rtlamr/" + strconv.FormatUint(uint64(msg.GetEndpointId()), 10)
-				sendMqttMessage(mqttClient, topic, fmt.Sprintf("%s\n", logMsg.Message))
-			} else {
-				fmt.Println("MQTT: CLIENT NOT CONNECTED")
+			if mqttEnabled {
+				if mqttClient != nil && mqttClient.IsConnected() {
+					topic := mqttRootTopic + "/" + strconv.FormatUint(uint64(msg.GetEndpointId()), 10)
+					sendMqttMessage(mqttClient, topic, fmt.Sprintf("%s\n", logMsg.Message))
+				} else {
+					fmt.Println("MQTT: CLIENT NOT CONNECTED")
+				}
 			}
 		}
 	}
