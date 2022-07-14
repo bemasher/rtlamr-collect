@@ -363,7 +363,7 @@ func lookupEnv(name string, dryRun bool) string {
 
 func sendMqttMessage(client MQTT.Client, topic string, payload string) {
 	if token := client.Publish(topic, 0, false, payload); token.Wait() && token.Error() != nil {
-		fmt.Printf("MQTT ERROR, %s\n", token.Error())
+		log.Errorf("MQTT ERROR, %s\n", token.Error())
 	}
 }
 
@@ -439,7 +439,7 @@ func main() {
 		mqttOpts.SetWill(mqttRootTopic+"/collect", `{ "status": "down" }`, 0, false)
 
 		mqttOpts.OnConnect = func(client MQTT.Client) {
-			fmt.Printf("MQTT: CONNECTED TO %s\n", mqttServerAddress)
+			log.Printf("MQTT: CONNECTED TO %s\n", mqttServerAddress)
 		}
 		mqttClient = MQTT.NewClient(mqttOpts)
 		if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
@@ -550,7 +550,7 @@ func main() {
 					topic := mqttRootTopic + "/" + strconv.FormatUint(uint64(msg.GetEndpointId()), 10)
 					sendMqttMessage(mqttClient, topic, fmt.Sprintf("%s\n", logMsg.Message))
 				} else {
-					fmt.Println("MQTT: CLIENT NOT CONNECTED")
+					log.Warn("MQTT: CLIENT NOT CONNECTED")
 				}
 			}
 		}
