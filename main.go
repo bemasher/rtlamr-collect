@@ -549,6 +549,14 @@ func main() {
 				if mqttClient != nil && mqttClient.IsConnected() {
 					topic := mqttRootTopic + "/" + strconv.FormatUint(uint64(msg.GetEndpointId()), 10)
 					sendMqttMessage(mqttClient, topic, fmt.Sprintf("%s\n", logMsg.Message))
+
+					msg.AddPoints(logMsg, func(t time.Time, tags map[string]string, fields map[string]interface{}) {
+						for field := range fields {
+							subtopic := topic + "/" + field
+							value := fmt.Sprintf("%v", fields[field])
+							sendMqttMessage(mqttClient, subtopic, value)
+						}
+					})
 				} else {
 					log.Warn("MQTT: CLIENT NOT CONNECTED")
 				}
